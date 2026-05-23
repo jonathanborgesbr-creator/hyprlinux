@@ -1,6 +1,3 @@
-Aqui está seu script completo com as alterações solicitadas:
-
-```bash
 #!/bin/bash
 
 # Define cores
