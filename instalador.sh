@@ -177,7 +177,6 @@ PACOTES_PACMAN=(
     rofi-wayland
     dunst
     cliphist
-    wlogout
     xdg-desktop-portal-hyprland
     xdg-desktop-portal-gtk
     xdg-user-dirs
@@ -214,7 +213,6 @@ PACOTES_PACMAN=(
     gst-plugins-ugly
     ffmpeg
     mpv
-    qview
     nano
     archlinux-xdg-menu
     hyprshot
@@ -223,6 +221,8 @@ PACOTES_PACMAN=(
 PACOTES_AUR=(
     nwg-look
     visual-studio-code-bin
+    qview
+    wlogout
 )
 
 # Verificar pacotes já instalados
