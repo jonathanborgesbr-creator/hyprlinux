@@ -192,16 +192,10 @@ PACOTES_PACMAN=(
     ttf-font-awesome
     ttf-jetbrains-mono-nerd
     ttf-opensans
-    ttf-dejavu
-    noto-fonts
     ttf-roboto
     
     # Áudio
     pipewire
-    pipewire-pulse
-    pipewire-jack
-    pipewire-alsa
-    wireplumber
     pavucontrol
     
     # Multimídia
@@ -210,9 +204,6 @@ PACOTES_PACMAN=(
     gst-plugins-good
     gst-plugins-bad
     gst-plugins-ugly
-    ffmpeg
-    mpv
-    qview
     
     # Ferramentas
     nano
@@ -223,6 +214,8 @@ PACOTES_PACMAN=(
 PACOTES_AUR=(
     nwg-look
     visual-studio-code-bin
+    mpv
+    qview
 )
 
 # Verificar pacotes já instalados
