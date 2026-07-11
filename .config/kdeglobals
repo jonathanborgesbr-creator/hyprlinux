@@ -1,0 +1,11 @@
+[General]
+TerminalApplication=kitty
+
+[Icons]
+Theme=Papirus-Dark
+
+[KDE]
+widgetStyle=qt6ct-style
+
+[KShortcutsDialog Settings]
+Dialog Size=642,480
