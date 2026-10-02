@@ -1,290 +1,187 @@
 #!/bin/bash
 
-# Define cores
+# Define cores para o terminal
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# --- 0. Verificação Inicial de Segurança ---
-USUARIO=$(whoami)
-if [ "$USUARIO" == "root" ]; then
-    echo -e "${RED}ERRO: Por favor, execute este script como seu usuário normal, não como root.${NC}"
-    exit 1
-fi
-
-# Arquivo único de log para pacotes
-LOG_PACOTES="$HOME/status_pacotes.txt"
-
-# Diretório original de onde o script foi chamado
+# Arquivo único de log (Gera um relatório completo do início ao fim)
+LOG_FILE="$HOME/sway_install_report.txt"
 SCRIPT_DIR="$(pwd)"
 
 # Limpar log anterior e escrever cabeçalho
 {
     echo "=========================================="
-    echo " RELATÓRIO DE PACOTES HYPRLAND"
+    echo " INSTALAÇÃO SWAY - RELATÓRIO ÚNICO"
     echo " Data/Hora: $(date '+%d/%m/%Y %H:%M:%S')"
-    echo " Usuário: $USUARIO"
+    echo " Usuário: $(whoami)"
     echo "=========================================="
     echo ""
-} > "$LOG_PACOTES"
+} > "$LOG_FILE"
 
-# Função auxiliar para exibir na tela
-log_tela() {
+# Função para logging (Exibe colorido na tela, salva a saída técnica no arquivo)
+log() {
     echo -e "$1"
+    echo -e "$1" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g' >> "$LOG_FILE"
 }
 
-# Arrays para rastrear pacotes
+# Arrays para rastrear pacotes e serviços
 declare -a PACOTES_JA_INSTALADOS
-declare -a PACOTES_INSTALADOS_AGORA
-declare -a PACOTES_FALHOS
+declare -a PACOTES_INSTALADOS
+declare -a PACOTES_NAO_INSTALADOS
+declare -a SERVICOS_ATIVADOS
+declare -a SERVICOS_FALHOS
 
-# Função para exibir uma linha de separação
 separator() {
-    log_tela "\n${YELLOW}------------------------------------------------------${NC}"
+    log "\n${YELLOW}------------------------------------------------------${NC}"
 }
 
-# --- FUNÇÃO: Verificar se pacote está instalado ---
-is_installed() {
-    local pkg="$1"
-    pacman -Qi "$pkg" &> /dev/null
+is_pacman_installed() {
+    pacman -Qi "$1" &> /dev/null
 }
 
-# --- FUNÇÃO: Pausa para confirmação em caso de erro grave ---
+is_aur_installed() {
+    pacman -Qm "$1" &> /dev/null
+}
+
 confirmar_proxima_etapa() {
     local proxima_acao="$1"
     local status_anterior=$2
 
     if [ "$status_anterior" -ne 0 ]; then
-        log_tela "${RED}Etapa anterior falhou (status $status_anterior).${NC}"
+        log "${RED}Etapa anterior falhou (status $status_anterior) antes de: ${proxima_acao}.${NC}"
         while true; do
             read -p "Deseja ignorar este erro e continuar para a ${proxima_acao}? (s/N): " resposta
             resposta=${resposta:-N}
             case $resposta in
-                [Ss]* ) log_tela "${YELLOW}Continuando...${NC}"; return 0;;
-                [Nn]* ) log_tela "${RED}Operação abortada pelo usuário.${NC}"; exit 1;;
+                [Ss]* ) log "${YELLOW}Continuando por decisão do usuário.${NC}"; return 0;;
+                [Nn]* ) log "${RED}Operação abortada.${NC}"; exit 1;;
                 * ) echo "Resposta inválida. Digite 's' ou 'N'.";;
             esac
         done
     fi
+    log "${GREEN}Etapa anterior concluída com êxito. Prosseguindo para: ${proxima_acao}${NC}"
     return 0
 }
 
-# --- FUNÇÃO: instala pacotes pacman um a um ---
-instalar_pacman_individualmente() {
-    local pacotes=("$@")
-    for pkg in "${pacotes[@]}"; do
-        log_tela "   Tentando instalar individualmente: $pkg"
-        sudo pacman -S --needed --noconfirm "$pkg" &> /dev/null
-        if [ $? -eq 0 ] && is_installed "$pkg"; then
-            PACOTES_INSTALADOS_AGORA+=("$pkg")
-            log_tela "   ${GREEN}✓ $pkg instalado${NC}"
-        else
-            PACOTES_FALHOS+=("$pkg (Pacman)")
-            log_tela "   ${RED}✗ $pkg falhou${NC}"
-        fi
-    done
-}
+# --- 0. Verificações Iniciais ---
+separator
+log "${GREEN}--- 0. Verificações Iniciais ---${NC}"
+
+if ! grep -qi "arch" /etc/os-release; then
+    log "${RED}ERRO: Este script foi feito para Arch Linux!${NC}"
+    exit 1
+fi
+
+USUARIO=$(whoami)
+if [ "$USUARIO" == "root" ]; then
+    log "${RED}ERRO: Execute este script como seu usuário normal, não como root.${NC}"
+    exit 1
+fi
+
+# --- 0.5. Garantindo ferramentas base do perfil minimal ---
+# O archinstall no perfil "minimal" pode não trazer 'sudo', 'nano', 'less' e afins.
+# Precisamos do 'sudo' para o restante do script funcionar.
+separator
+log "${GREEN}--- 0.5. Verificando Ferramentas Base (perfil minimal) ---${NC}"
+
+if ! command -v sudo &> /dev/null; then
+    log "${YELLOW}sudo não encontrado. Instalando via pacman (vai pedir senha do root)...${NC}"
+    su -c "pacman -S --needed --noconfirm sudo" >> "$LOG_FILE" 2>&1
+    if ! command -v sudo &> /dev/null; then
+        log "${RED}ERRO: Não foi possível instalar o 'sudo'. Abortando.${NC}"
+        exit 1
+    fi
+    log "${GREEN}✓ sudo instalado com sucesso.${NC}"
+else
+    log "${GREEN}✓ sudo já está instalado.${NC}"
+fi
 
 # --- 1. Preparação e Atualização do Sistema ---
 separator
-log_tela "${GREEN}--- 1. Preparando o Sistema e Atualizando ---${NC}"
-log_tela "Será solicitada sua senha para instalar pacotes essenciais e atualizar o sistema."
+log "${GREEN}--- 1. Preparando o Sistema e Atualizando ---${NC}"
 
-if ! grep -qi "arch" /etc/os-release; then
-    log_tela "${RED}ERRO: Este script foi feito para Arch Linux!${NC}"
-    exit 1
-fi
-
-sudo pacman -S --needed git base-devel --noconfirm &> /dev/null
-if [ $? -ne 0 ]; then
-    log_tela "${RED}ERRO: Falha ao instalar git e base-devel${NC}"
-    exit 1
-fi
-
-sudo pacman -Syu --noconfirm &> /dev/null
+sudo pacman -S --needed git base-devel nano less --noconfirm >> "$LOG_FILE" 2>&1
+sudo pacman -Syu --noconfirm >> "$LOG_FILE" 2>&1
 INSTALL_STATUS=$?
-if [ $INSTALL_STATUS -ne 0 ]; then
-    log_tela "${RED}ERRO: Falha ao atualizar o sistema.${NC}"
-    exit 1
-fi
-confirmar_proxima_etapa "instalação do AUR Helper (yay)" $INSTALL_STATUS
+confirmar_proxima_etapa "Instalação do AUR Helper" $INSTALL_STATUS
 
-# --- 2. Instalação do 'yay' (AUR helper) ---
+# --- 2. Instalação do 'yay' ---
 separator
-log_tela "${GREEN}--- 2. Instalando o 'yay' (AUR Helper) ---${NC}"
+log "${GREEN}--- 2. Instalando o 'yay' (AUR Helper) ---${NC}"
 
 if command -v yay &> /dev/null; then
-    log_tela "${GREEN}yay já está instalado. Pulando...${NC}"
+    log "${GREEN}yay já está instalado. Pulando...${NC}"
     INSTALL_STATUS=0
 else
     cd /tmp/ || exit 1
     rm -rf yay
-
-    if git clone https://aur.archlinux.org/yay &> /dev/null; then
-        cd yay || { cd "$SCRIPT_DIR"; exit 1; }
-        log_tela "Compilando e instalando o yay..."
-        makepkg -si --noconfirm &> /dev/null
+    if git clone https://aur.archlinux.org/yay &>> "$LOG_FILE"; then
+        cd yay || exit 1
+        makepkg -si --noconfirm >> "$LOG_FILE" 2>&1
         INSTALL_STATUS=$?
-        if [ $INSTALL_STATUS -eq 0 ]; then
-            log_tela "${GREEN}yay instalado com sucesso!${NC}"
-            cd /tmp && rm -rf yay
-        else
-            log_tela "${RED}ERRO: Falha ao compilar/instalar o yay.${NC}"
-        fi
+        cd /tmp && rm -rf yay
     else
-        log_tela "${RED}ERRO: Falha ao clonar o repositório do yay.${NC}"
         INSTALL_STATUS=1
     fi
     cd "$SCRIPT_DIR" || cd "$HOME"
 fi
-confirmar_proxima_etapa "instalação de pacotes" $INSTALL_STATUS
+confirmar_proxima_etapa "Instalação de Pacotes" $INSTALL_STATUS
 
 # --- 3. Instalação de Pacotes ---
 separator
-log_tela "${GREEN}--- 3. Instalação de Pacotes ---${NC}"
+log "${GREEN}--- 3. Instalação de Pacotes ---${NC}"
 
 PACOTES_PACMAN=(
-    archlinux-xdg-menu
-    ark
-    blueman
-    bluez
-    bluez-utils
-    breeze
-    breeze-gtk
-    brightnessctl
-    cliphist
-    dolphin
-    dolphin-plugins
-    dunst
-    gst-plugins-bad
-    gst-plugins-base
-    gst-plugins-good
-    gst-plugins-ugly
-    hyprcursor
-    hypridle
-    hyprland
-    hyprlock
-    hyprpaper
-    hyprpicker
-    hyprshot
-    kate
-    kde-cli-tools
-    kio-admin
-    kitty
-    mission-center
-    mpv
-    networkmanager
-    noto-fonts
-    nwg-look
-    papirus-icon-theme
-    pavucontrol
-    pipewire
-    pipewire-alsa
-    pipewire-jack
-    pipewire-pulse
-    polkit-kde-agent
-    qt5-wayland
-    qt5ct
-    qt6-wayland
-    qt6ct
-    rofi-wayland
-    ttf-dejavu
-    ttf-font-awesome
-    ttf-jetbrains-mono-nerd
-    ttf-opensans
-    ttf-roboto
-    waybar
-    wireplumber
-    xdg-desktop-portal-gtk
-    xdg-desktop-portal-hyprland
-    xdg-user-dirs
+    archlinux-xdg-menu ark breeze breeze5 breeze-gtk blueman brightnessctl bluez bluez-utils
+    cliphist dolphin dolphin-plugins dunst gst-plugins-bad gst-plugins-base gst-plugins-good
+    gst-plugins-ugly grim slurp sway swaybg swayidle swaylock
+    kate kde-cli-tools kio-admin kitty mpv networkmanager noto-fonts papirus-icon-theme
+    pavucontrol polkit-gnome qt5-wayland qt6-wayland rofi-wayland ttf-dejavu
+    ttf-font-awesome ttf-jetbrains-mono-nerd ttf-opensans ttf-roboto waybar
+    wl-clipboard xdg-desktop-portal-gtk xdg-desktop-portal-wlr xdg-user-dirs xorg-xwayland
+    pipewire pipewire-pulse wireplumber playerctl
 )
 
 PACOTES_AUR=(
-    auto-cpufreq
-    qview
-    visual-studio-code-bin
-    wlogout
+    visual-studio-code-bin qview wlogout qt5ct-kde qt6ct-kde auto-cpufreq
 )
 
-log_tela "${YELLOW}Verificando pacotes já instalados...${NC}"
-PACOTES_PARA_INSTALAR_PACMAN=()
-PACOTES_PARA_INSTALAR_AUR=()
-
+# Processando Repositórios Oficiais (Pacman)
 for pkg in "${PACOTES_PACMAN[@]}"; do
-    if is_installed "$pkg"; then
+    if is_pacman_installed "$pkg"; then
         PACOTES_JA_INSTALADOS+=("$pkg")
-        log_tela "${GREEN}✓ $pkg (já instalado)${NC}"
     else
-        PACOTES_PARA_INSTALAR_PACMAN+=("$pkg")
+        log "Instalando: $pkg..."
+        if sudo pacman -S --needed --noconfirm "$pkg" >> "$LOG_FILE" 2>&1; then
+            PACOTES_INSTALADOS+=("$pkg")
+        else
+            PACOTES_NAO_INSTALADOS+=("$pkg (Pacman)")
+        fi
     fi
 done
 
+# Processando AUR (Yay)
 for pkg in "${PACOTES_AUR[@]}"; do
-    if is_installed "$pkg"; then
-        PACOTES_JA_INSTALADOS+=("$pkg (AUR)")
-        log_tela "${GREEN}✓ $pkg (já instalado - AUR)${NC}"
+    if is_aur_installed "$pkg"; then
+        PACOTES_JA_INSTALADOS+=("$pkg")
     else
-        PACOTES_PARA_INSTALAR_AUR+=("$pkg")
+        log "Instalando via AUR: $pkg..."
+        if yay -S --needed --noconfirm "$pkg" >> "$LOG_FILE" 2>&1; then
+            PACOTES_INSTALADOS+=("$pkg")
+        else
+            PACOTES_NAO_INSTALADOS+=("$pkg (AUR)")
+        fi
     fi
 done
 
-# Instalar pacotes pacman
-if [ ${#PACOTES_PARA_INSTALAR_PACMAN[@]} -gt 0 ]; then
-    log_tela "\n${YELLOW}Instalando pacotes do pacman (${#PACOTES_PARA_INSTALAR_PACMAN[@]} pacotes)...${NC}"
-
-    sudo pacman -S --needed --noconfirm "${PACOTES_PARA_INSTALAR_PACMAN[@]}" &> /dev/null
-    INSTALL_STATUS=$?
-
-    if [ $INSTALL_STATUS -eq 0 ]; then
-        for pkg in "${PACOTES_PARA_INSTALAR_PACMAN[@]}"; do
-            PACOTES_INSTALADOS_AGORA+=("$pkg")
-        done
-        log_tela "${GREEN}Pacotes pacman instalados com sucesso!${NC}"
-    else
-        log_tela "${YELLOW}Falha em lote. Tentando instalar um a um...${NC}"
-        instalar_pacman_individualmente "${PACOTES_PARA_INSTALAR_PACMAN[@]}"
-    fi
-else
-    log_tela "${GREEN}Todos os pacotes pacman já estão instalados!${NC}"
-fi
-
-# Instalar pacotes AUR
-if [ ${#PACOTES_PARA_INSTALAR_AUR[@]} -gt 0 ]; then
-    log_tela "\n${YELLOW}Instalando pacotes do AUR (${#PACOTES_PARA_INSTALAR_AUR[@]} pacotes)...${NC}"
-
-    yay -S --needed --noconfirm "${PACOTES_PARA_INSTALAR_AUR[@]}" &> /dev/null
-    INSTALL_STATUS=$?
-
-    if [ $INSTALL_STATUS -eq 0 ]; then
-        for pkg in "${PACOTES_PARA_INSTALAR_AUR[@]}"; do
-            PACOTES_INSTALADOS_AGORA+=("$pkg (AUR)")
-        done
-        log_tela "${GREEN}Pacotes AUR instalados com sucesso!${NC}"
-    else
-        log_tela "${YELLOW}Tentando instalar pacotes AUR um a um...${NC}"
-        for pkg in "${PACOTES_PARA_INSTALAR_AUR[@]}"; do
-            log_tela "   Tentando instalar individualmente (AUR): $pkg"
-            yay -S --needed --noconfirm "$pkg" &> /dev/null
-            if [ $? -eq 0 ] && is_installed "$pkg"; then
-                PACOTES_INSTALADOS_AGORA+=("$pkg (AUR)")
-                log_tela "   ${GREEN}✓ $pkg instalado${NC}"
-            else
-                PACOTES_FALHOS+=("$pkg (AUR)")
-                log_tela "   ${RED}✗ $pkg falhou${NC}"
-            fi
-        done
-    fi
-else
-    log_tela "${GREEN}Todos os pacotes AUR já estão instalados!${NC}"
-fi
+sudo systemctl daemon-reload
 
 # --- 4. Configuração de Diretórios XDG ---
 separator
-log_tela "${GREEN}--- 4. Configuração de Diretórios XDG ---${NC}"
-
+log "${GREEN}--- 4. Configuração de Diretórios XDG ---${NC}"
 mkdir -p "$HOME/.local/bin"
 
 cat > "$HOME/.local/bin/fix-xdg-dirs.sh" << 'EOF'
@@ -294,69 +191,107 @@ if [ -f "$HOME/.config/user-dirs.dirs" ]; then
     sed -i '/XDG_TEMPLATES_DIR/d' "$HOME/.config/user-dirs.dirs"
     sed -i '/XDG_PUBLICSHARE_DIR/d' "$HOME/.config/user-dirs.dirs"
 fi
-if command -v kbuildsycoca6 &> /dev/null; then
-    XDG_MENU_PREFIX=arch- kbuildsycoca6 2>/dev/null || kbuildsycoca6 2>/dev/null
-fi
 EOF
-
 chmod +x "$HOME/.local/bin/fix-xdg-dirs.sh"
 ~/.local/bin/fix-xdg-dirs.sh
 
-for rcfile in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rcfile" ] && ! grep -q "fix-xdg-dirs.sh" "$rcfile"; then
-        echo -e "\n# Correção XDG para Dolphin\n[ -f ~/.local/bin/fix-xdg-dirs.sh ] && ~/.local/bin/fix-xdg-dirs.sh &> /dev/null &" >> "$rcfile"
+# --- 5. Ativação de Serviços e Inicializações Necessárias ---
+separator
+log "${GREEN}--- 5. Ativando Serviços e Configurando Inicializações ---${NC}"
+
+# Systemd (Serviços a Nível de Sistema)
+for srv in NetworkManager bluetooth auto-cpufreq; do
+    log "Ativando serviço de sistema: $srv..."
+    if sudo systemctl enable --now "$srv" >> "$LOG_FILE" 2>&1; then
+        SERVICOS_ATIVADOS+=("$srv")
+    else
+        SERVICOS_FALHOS+=("$srv")
     fi
 done
 
-# --- 5. Ativação de Serviços ---
-separator
-log_tela "${GREEN}--- 5. Ativando Serviços Necessários ---${NC}"
-
-command -v NetworkManager &> /dev/null && sudo systemctl enable --now NetworkManager &> /dev/null
-is_installed bluez && sudo systemctl enable --now bluetooth &> /dev/null
-is_installed auto-cpufreq && sudo systemctl enable --now auto-cpufreq &> /dev/null
-
-for servico in pipewire pipewire-pulse wireplumber; do
-    systemctl --user enable --now "$servico" &> /dev/null
+# Systemd (Serviços a Nível de Usuário - Áudio)
+for srv in pipewire pipewire-pulse wireplumber; do
+    log "Ativando serviço de usuário: $srv..."
+    if systemctl --user enable --now "$srv" >> "$LOG_FILE" 2>&1; then
+        SERVICOS_ATIVADOS+=("$srv (user)")
+    else
+        SERVICOS_FALHOS+=("$srv (user)")
+    fi
 done
 
-# --- 6. GERAÇÃO DO LOG ÚNICO E RELATÓRIO FINAL ---
-{
-    echo "--- 1. PACOTES JÁ INSTALADOS ANTES (${#PACOTES_JA_INSTALADOS[@]}) ---"
-    if [ ${#PACOTES_JA_INSTALADOS[@]} -gt 0 ]; then
-        printf '%s\n' "${PACOTES_JA_INSTALADOS[@]}" | sort | sed 's/^/  • /'
-    else
-        echo "  Nenhum."
-    fi
-    echo ""
-
-    echo "--- 2. PACOTES INSTALADOS AGORA (${#PACOTES_INSTALADOS_AGORA[@]}) ---"
-    if [ ${#PACOTES_INSTALADOS_AGORA[@]} -gt 0 ]; then
-        printf '%s\n' "${PACOTES_INSTALADOS_AGORA[@]}" | sort | sed 's/^/  • /'
-    else
-        echo "  Nenhum."
-    fi
-    echo ""
-
-    echo "--- 3. PACOTES QUE NÃO FORAM INSTALADOS / FALHARAM (${#PACOTES_FALHOS[@]}) ---"
-    if [ ${#PACOTES_FALHOS[@]} -gt 0 ]; then
-        printf '%s\n' "${PACOTES_FALHOS[@]}" | sort | sed 's/^/  • /'
-    else
-        echo "  Nenhuma falha registrada! Todos os pacotes foram instalados com sucesso."
-    fi
-} >> "$LOG_PACOTES"
-
+# --- 6. Configuração do Sway ---
 separator
-log_tela "\n${GREEN}======================================================${NC}"
-log_tela "${GREEN}✔️ Instalação e Configuração Concluídas!${NC}"
-log_tela "${GREEN}======================================================${NC}"
+log "${GREEN}--- 6. Configurando arquivo de inicialização do Sway ---${NC}"
 
-log_tela "\n${BLUE}📦 RESUMO DE PACOTES:${NC}"
-log_tela "   Já instalados antes:   ${#PACOTES_JA_INSTALADOS[@]}"
-log_tela "   Instalados agora:      ${#PACOTES_INSTALADOS_AGORA[@]}"
-log_tela "   Não instalados/Falhas: ${#PACOTES_FALHOS[@]}"
+SWAY_DIR="$HOME/.config/sway"
+SWAY_CONFIG="$SWAY_DIR/config"
+mkdir -p "$SWAY_DIR"
 
-log_tela "\n${BLUE}📝 LOG DE PACOTES GERADO:${NC}"
-log_tela "   • Arquivo: ${GREEN}$LOG_PACOTES${NC}"
+if [ ! -f "$SWAY_CONFIG" ]; then
+    cat > "$SWAY_CONFIG" << 'EOF'
+# Configuração básica do Sway (gerada pelo script de instalação)
 
-log_tela "\n${GREEN}✅ Script finalizado!${NC}\n"
+# Inicializações automáticas
+exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
+exec nm-applet --indicator
+exec blueman-applet
+exec mako
+exec waybar
+exec swaybg -c '#2e3440'
+exec swayidle -w \
+    timeout 300 'swaylock -f -c 000000' \
+    timeout 600 'swaymsg "output * dpms off"' \
+    resume 'swaymsg "output * dpms on"' \
+    before-sleep 'swaylock -f -c 000000'
+EOF
+    log "${GREEN}✓ Arquivo config do Sway criado com as inicializações ativadas.${NC}"
+else
+    sed -i '/polkit-kde-authentication-agent-1/d' "$SWAY_CONFIG"
+
+    if ! grep -q "polkit-gnome-authentication-agent-1" "$SWAY_CONFIG"; then
+        {
+            echo ""
+            echo "# Injetado automaticamente pelo script de instalação"
+            echo "exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
+            echo "exec nm-applet --indicator"
+            echo "exec blueman-applet"
+        } >> "$SWAY_CONFIG"
+        log "${GREEN}✓ Inicializações automáticas injetadas no config do Sway.${NC}"
+    else
+        log "${YELLOW}ℹ Inicializações automáticas já mapeadas no config do Sway.${NC}"
+    fi
+fi
+
+# --- 7. Relatório Final Único ---
+separator
+log "\n${GREEN}======================================================${NC}"
+log "${GREEN}✔️ INSTALAÇÃO CONCLUÍDA! RELATÓRIO DE PACOTES:${NC}"
+log "${GREEN}======================================================${NC}"
+
+log "\n${GREEN}📥 PACOTES INSTALADOS NESTA SESSÃO:${NC}"
+if [ ${#PACOTES_INSTALADOS[@]} -eq 0 ]; then log "   (Nenhum)"; else
+    for pkg in "${PACOTES_INSTALADOS[@]}"; do log "   • $pkg"; done
+fi
+
+log "\n${BLUE}✅ PACOTES QUE JÁ ESTAVAM INSTALADOS:${NC}"
+if [ ${#PACOTES_JA_INSTALADOS[@]} -eq 0 ]; then log "   (Nenhum)"; else
+    for pkg in "${PACOTES_JA_INSTALADOS[@]}"; do log "   • $pkg"; done
+fi
+
+log "\n${RED}❌ PACOTES NÃO INSTALADOS / FALHOU:${NC}"
+if [ ${#PACOTES_NAO_INSTALADOS[@]} -eq 0 ]; then log "   (Nenhum)"; else
+    for pkg in "${PACOTES_NAO_INSTALADOS[@]}"; do log "   • $pkg"; done
+fi
+
+log "\n${GREEN}🟢 SERVIÇOS DO SYSTEMD ATIVADOS COM SUCESSO:${NC}"
+if [ ${#SERVICOS_ATIVADOS[@]} -eq 0 ]; then log "   (Nenhum)"; else
+    for srv in "${SERVICOS_ATIVADOS[@]}"; do log "   • $srv"; done
+fi
+
+log "\n${RED}🔴 SERVIÇOS DO SYSTEMD QUE FALHARAM:${NC}"
+if [ ${#SERVICOS_FALHOS[@]} -eq 0 ]; then log "   (Nenhum)"; else
+    for srv in "${SERVICOS_FALHOS[@]}"; do log "   • $srv"; done
+fi
+
+log "\n${BLUE}📝 RELATÓRIO TÉCNICO COMPLETO (Logs e outputs internos de erro):${NC}"
+log "   • Caminho: ${GREEN}$LOG_FILE${NC}\n"
