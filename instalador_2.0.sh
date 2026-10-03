@@ -8,13 +8,13 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Arquivo único de log (Gera um relatório completo do início ao fim)
-LOG_FILE="$HOME/sway_install_report.txt"
+LOG_FILE="$HOME/hyprland_install_report.txt"
 SCRIPT_DIR="$(pwd)"
 
 # Limpar log anterior e escrever cabeçalho
 {
     echo "=========================================="
-    echo " INSTALAÇÃO SWAY - RELATÓRIO ÚNICO"
+    echo " INSTALAÇÃO HYPRLAND - RELATÓRIO ÚNICO"
     echo " Data/Hora: $(date '+%d/%m/%Y %H:%M:%S')"
     echo " Usuário: $(whoami)"
     echo "=========================================="
@@ -66,9 +66,9 @@ confirmar_proxima_etapa() {
     return 0
 }
 
-# --- 0. Verificações Iniciais ---
+# --- 0. Preparação e Atualização do Sistema ---
 separator
-log "${GREEN}--- 0. Verificações Iniciais ---${NC}"
+log "${GREEN}--- 0. Preparando o Sistema e Atualizando ---${NC}"
 
 if ! grep -qi "arch" /etc/os-release; then
     log "${RED}ERRO: Este script foi feito para Arch Linux!${NC}"
@@ -81,32 +81,46 @@ if [ "$USUARIO" == "root" ]; then
     exit 1
 fi
 
-# --- 0.5. Garantindo ferramentas base do perfil minimal ---
-# O archinstall no perfil "minimal" pode não trazer 'sudo', 'nano', 'less' e afins.
-# Precisamos do 'sudo' para o restante do script funcionar.
-separator
-log "${GREEN}--- 0.5. Verificando Ferramentas Base (perfil minimal) ---${NC}"
-
-if ! command -v sudo &> /dev/null; then
-    log "${YELLOW}sudo não encontrado. Instalando via pacman (vai pedir senha do root)...${NC}"
-    su -c "pacman -S --needed --noconfirm sudo" >> "$LOG_FILE" 2>&1
-    if ! command -v sudo &> /dev/null; then
-        log "${RED}ERRO: Não foi possível instalar o 'sudo'. Abortando.${NC}"
-        exit 1
-    fi
-    log "${GREEN}✓ sudo instalado com sucesso.${NC}"
-else
-    log "${GREEN}✓ sudo já está instalado.${NC}"
-fi
-
-# --- 1. Preparação e Atualização do Sistema ---
-separator
-log "${GREEN}--- 1. Preparando o Sistema e Atualizando ---${NC}"
-
-sudo pacman -S --needed git base-devel nano less --noconfirm >> "$LOG_FILE" 2>&1
+# Redirecionamento 2>&1 garante que erros cruciais do pacman fiquem registrados no arquivo de log único
+sudo pacman -S --needed git base-devel pciutils --noconfirm >> "$LOG_FILE" 2>&1
 sudo pacman -Syu --noconfirm >> "$LOG_FILE" 2>&1
 INSTALL_STATUS=$?
-confirmar_proxima_etapa "Instalação do AUR Helper" $INSTALL_STATUS
+confirmar_proxima_etapa "Verificação de Hardware / Instalação do AUR Helper" $INSTALL_STATUS
+
+# --- 1. Verificação de GPU NVIDIA e Instalação de Drivers ---
+separator
+log "${GREEN}--- 1. Verificando Hardware Gráfico (NVIDIA) ---${NC}"
+
+TEM_NVIDIA=false
+if lspci | grep -i nvidia &> /dev/null; then
+    TEM_NVIDIA=true
+    log "${GREEN}✓ GPU NVIDIA detectada no sistema! Preparando para instalar os drivers proprietários.${NC}"
+else
+    log "${YELLOW}ℹ Nenhuma GPU NVIDIA detectada neste dispositivo. Pulando instalação do driver.${NC}"
+fi
+
+if [ "$TEM_NVIDIA" = true ]; then
+    # Garantir suporte a multilib caso não esteja ativo (necessário para lib32-nvidia-utils)
+    if ! grep -q "\[multilib\]" /etc/pacman.conf; then
+        log "Habilitando repositório multilib..."
+        echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" | sudo tee -a /etc/pacman.conf >> "$LOG_FILE" 2>&1
+        sudo pacman -Syu --noconfirm >> "$LOG_FILE" 2>&1
+    fi
+
+    PACOTES_NVIDIA=(nvidia nvidia-utils lib32-nvidia-utils nvidia-settings)
+    for pkg in "${PACOTES_NVIDIA[@]}"; do
+        if is_pacman_installed "$pkg"; then
+            PACOTES_JA_INSTALADOS+=("$pkg")
+        else
+            log "Instalando driver NVIDIA: $pkg..."
+            if sudo pacman -S --needed --noconfirm "$pkg" >> "$LOG_FILE" 2>&1; then
+                PACOTES_INSTALADOS+=("$pkg")
+            else
+                PACOTES_NAO_INSTALADOS+=("$pkg (Pacman)")
+            fi
+        fi
+    done
+fi
 
 # --- 2. Instalação do 'yay' ---
 separator
@@ -128,25 +142,25 @@ else
     fi
     cd "$SCRIPT_DIR" || cd "$HOME"
 fi
-confirmar_proxima_etapa "Instalação de Pacotes" $INSTALL_STATUS
+confirmar_proxima_etapa "Instalação de Pacotes do Ambiente" $INSTALL_STATUS
 
 # --- 3. Instalação de Pacotes ---
 separator
-log "${GREEN}--- 3. Instalação de Pacotes ---${NC}"
+log "${GREEN}--- 3. Instalação de Pacotes do Ambiente ---${NC}"
 
 PACOTES_PACMAN=(
     archlinux-xdg-menu ark breeze breeze5 breeze-gtk blueman brightnessctl bluez bluez-utils
     cliphist dolphin dolphin-plugins dunst gst-plugins-bad gst-plugins-base gst-plugins-good
-    gst-plugins-ugly grim slurp sway swaybg swayidle swaylock
+    gst-plugins-ugly hyprcursor hypridle hyprland hyprlock hyprpaper hyprpicker hyprshot
     kate kde-cli-tools kio-admin kitty mpv networkmanager noto-fonts papirus-icon-theme
-    pavucontrol polkit-gnome qt5-wayland qt6-wayland rofi-wayland ttf-dejavu
+    pavucontrol qt5-wayland qt6-wayland rofi-wayland ttf-dejavu
     ttf-font-awesome ttf-jetbrains-mono-nerd ttf-opensans ttf-roboto waybar
-    wl-clipboard xdg-desktop-portal-gtk xdg-desktop-portal-wlr xdg-user-dirs xorg-xwayland
-    pipewire pipewire-pulse wireplumber playerctl
+    xdg-desktop-portal-gtk xdg-desktop-portal-hyprland xdg-user-dirs
 )
 
+# Adicionado hyprpolkitagent no AUR substituindo o polkit-kde antigo
 PACOTES_AUR=(
-    visual-studio-code-bin qview wlogout qt5ct-kde qt6ct-kde auto-cpufreq
+    visual-studio-code-bin qview wlogout qt5ct-kde qt6ct-kde auto-cpufreq hyprpolkitagent
 )
 
 # Processando Repositórios Oficiais (Pacman)
@@ -177,6 +191,7 @@ for pkg in "${PACOTES_AUR[@]}"; do
     fi
 done
 
+# Atualizar os daemons do Systemd para reconhecer novos serviços (como o auto-cpufreq)
 sudo systemctl daemon-reload
 
 # --- 4. Configuração de Diretórios XDG ---
@@ -197,9 +212,9 @@ chmod +x "$HOME/.local/bin/fix-xdg-dirs.sh"
 
 # --- 5. Ativação de Serviços e Inicializações Necessárias ---
 separator
-log "${GREEN}--- 5. Ativando Serviços e Configurando Inicializações ---${NC}"
+log "${GREEN}--- 5. Ativando Serviços e Configurando Inicializações (Lua) ---${NC}"
 
-# Systemd (Serviços a Nível de Sistema)
+# Systemd (Serviços a Nível de Sistema - Adicionado auto-cpufreq)
 for srv in NetworkManager bluetooth auto-cpufreq; do
     log "Ativando serviço de sistema: $srv..."
     if sudo systemctl enable --now "$srv" >> "$LOG_FILE" 2>&1; then
@@ -219,50 +234,37 @@ for srv in pipewire pipewire-pulse wireplumber; do
     fi
 done
 
-# --- 6. Configuração do Sway ---
-separator
-log "${GREEN}--- 6. Configurando arquivo de inicialização do Sway ---${NC}"
+# --- Configuração do Arquivo de Inicialização do Hyprland (Transição para LUA) ---
+HYPR_DIR="$HOME/.config/hypr"
+HYPR_LUA="$HYPR_DIR/hyprland.lua"
+mkdir -p "$HYPR_DIR"
 
-SWAY_DIR="$HOME/.config/sway"
-SWAY_CONFIG="$SWAY_DIR/config"
-mkdir -p "$SWAY_DIR"
+log "Configurando inicializações automáticas no seu hyprland.lua..."
 
-if [ ! -f "$SWAY_CONFIG" ]; then
-    cat > "$SWAY_CONFIG" << 'EOF'
-# Configuração básica do Sway (gerada pelo script de instalação)
+if [ ! -f "$HYPR_LUA" ]; then
+    cat > "$HYPR_LUA" << 'EOF'
+-- Configuração do Hyprland em Lua
+local hl = require("hyprland")
 
-# Inicializações automáticas
-exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
-exec nm-applet --indicator
-exec blueman-applet
-exec mako
-exec waybar
-exec swaybg -c '#2e3440'
-exec swayidle -w \
-    timeout 300 'swaylock -f -c 000000' \
-    timeout 600 'swaymsg "output * dpms off"' \
-    resume 'swaymsg "output * dpms on"' \
-    before-sleep 'swaylock -f -c 000000'
+-- Inicializações automáticas executadas uma vez (exec-once)
+hl.exec_once({
+    "systemctl --user start hyprpolkitagent",
+    "blueman-applet"
+})
 EOF
-    log "${GREEN}✓ Arquivo config do Sway criado com as inicializações ativadas.${NC}"
+    log "${GREEN}✓ Arquivo hyprland.lua criado com as inicializações ativadas.${NC}"
 else
-    sed -i '/polkit-kde-authentication-agent-1/d' "$SWAY_CONFIG"
+    sed -i '/polkit-kde-authentication-agent-1/d' "$HYPR_LUA"
 
-    if ! grep -q "polkit-gnome-authentication-agent-1" "$SWAY_CONFIG"; then
-        {
-            echo ""
-            echo "# Injetado automaticamente pelo script de instalação"
-            echo "exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
-            echo "exec nm-applet --indicator"
-            echo "exec blueman-applet"
-        } >> "$SWAY_CONFIG"
-        log "${GREEN}✓ Inicializações automáticas injetadas no config do Sway.${NC}"
+    if ! grep -q "hyprpolkitagent" "$HYPR_LUA"; then
+        echo -e "\n-- Injetado automaticamente pelo script de instalação\nif require(\"hyprland\").exec_once then\n    require(\"hyprland\").exec_once({\"systemctl --user start hyprpolkitagent\", \"blueman-applet\"})\nend" >> "$HYPR_LUA"
+        log "${GREEN}✓ Inicializações automáticas injetadas em sintaxe Lua no final do hyprland.lua.${NC}"
     else
-        log "${YELLOW}ℹ Inicializações automáticas já mapeadas no config do Sway.${NC}"
+        log "${YELLOW}ℹ Inicializações automáticas já mapeadas no seu hyprland.lua.${NC}"
     fi
 fi
 
-# --- 7. Relatório Final Único ---
+# --- 6. Relatório Final Único ---
 separator
 log "\n${GREEN}======================================================${NC}"
 log "${GREEN}✔️ INSTALAÇÃO CONCLUÍDA! RELATÓRIO DE PACOTES:${NC}"
